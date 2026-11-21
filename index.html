@@ -69,37 +69,63 @@ input,select,textarea{width:100%;font:inherit;color:var(--tx);background:var(--b
 <button data-tab="appts"><b>▦</b>Janji Temu</button>
 </div></nav>
 <div id="modal"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script>
 const CATS=["Rumah","Barang Dapur","Bil","Anak-anak","Lain-lain"],WHO=["Suami","Isteri","Bersama"],APW=["Anak","Suami","Isteri","Keluarga"];
 const BLN=["Januari","Februari","Mac","April","Mei","Jun","Julai","Ogos","September","Oktober","November","Disember"],HRI=["Ahd","Isn","Sel","Rab","Kha","Jum","Sab"];
-const S={tasks:[],appts:[],tab:"home",view:"list",cat:"Semua",who:"Semua",month:new Date(),sel:null,local:true,db:null,show:"aktif"};
+const S={tasks:[],appts:[],tab:"home",view:"list",cat:"Semua",who:"Semua",month:new Date(),sel:null};
 const pad=n=>String(n).padStart(2,"0"),iso=d=>d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate());
 const TODAY=()=>iso(new Date());
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmt=s=>{if(!s)return"";const[y,m,d]=s.split("-").map(Number);return d+" "+BLN[m-1].slice(0,3)+" "+y};
 const $=id=>document.getElementById(id);
 
-/* ---- Storan: pangkalan data kongsi (masa nyata) atau setempat ---- */
-function lsLoad(){try{const j=JSON.parse(localStorage.getItem("kk")||"{}");S.tasks=j.tasks||[];S.appts=j.appts||[]}catch(e){}}
-function lsSave(){try{localStorage.setItem("kk",JSON.stringify({tasks:S.tasks,appts:S.appts}))}catch(e){}}
+/* ---- Supabase: pangkalan data kongsi + log masuk ---- */
+const SUPABASE_URL="https://eeecqmjkaydrlfsamadr.supabase.co";
+const SUPABASE_ANON_KEY="sb_publishable_ojY5RFwPUqjiVQKeu6O1Xw_piEoAE5E";
+const sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY);
+let channel=null;
+async function load(){
+  for(const c of ["tasks","appts"]){
+    const{data,error}=await sb.from(c).select("*");
+    if(!error)S[c]=data||[];
+  }
+  render();
+}
 async function save(col,id,data){
-  if(S.db){try{await S.db.collection(col).doc(id).set(data)}catch(e){alert("Gagal menyimpan. Anda mungkin hanya boleh melihat.")}return}
-  const arr=S[col],i=arr.findIndex(x=>x.id===id),o={id,...data};i<0?arr.push(o):arr[i]=o;lsSave();render();
+  const{error}=await sb.from(col).upsert({id,...data});
+  if(error)return alert("Gagal menyimpan: "+error.message);
+  load();
 }
 async function del(col,id){
-  if(S.db){try{await S.db.collection(col).doc(id).delete()}catch(e){alert("Gagal memadam.")}return}
-  S[col]=S[col].filter(x=>x.id!==id);lsSave();render();
+  const{error}=await sb.from(col).delete().eq("id",id);
+  if(error)return alert("Gagal memadam: "+error.message);
+  load();
 }
 async function init(){
-  lsLoad();render();
-  try{
-    const db=window.claude&&await Promise.race([claude.use("db"),new Promise(r=>setTimeout(()=>r(null),10000))]);
-    if(!db)throw 0;
-    S.db=db;S.local=false;S.tasks=[];S.appts=[];
-    ["tasks","appts"].forEach(c=>db.collection(c).onSnapshot(s=>{S[c]=s.docs.map(d=>({id:d.id,...d.data()}));render()},()=>{}));
-    $("sync").textContent="● Dikongsi · masa nyata";
-  }catch(e){$("sync").textContent="Mod peranti sahaja (tidak dikongsi)"}
   render();
+  if(SUPABASE_URL.startsWith("PASTE")){$("sync").textContent="Sila isi URL & kunci Supabase";return}
+  const{data:{session}}=await sb.auth.getSession();
+  session?start():showLogin();
+}
+function start(){
+  $("modal").innerHTML="";
+  $("sync").innerHTML='● Dikongsi · masa nyata · <a href="#" data-a="logout" style="color:inherit">Log keluar</a>';
+  load();
+  if(channel)sb.removeChannel(channel);
+  channel=sb.channel("kk").on("postgres_changes",{event:"*",schema:"public"},load).subscribe();
+}
+function showLogin(){
+  $("modal").innerHTML=`<div class="modal"><div class="sheet"><h3>Log masuk</h3>
+  <label>E-mel</label><input id="l-email" type="email" autocomplete="email">
+  <label>Kata laluan</label><input id="l-pw" type="password" autocomplete="current-password">
+  <div class="btns"><button class="btn p" id="l-go">Masuk</button></div></div></div>`;
+  const go=async()=>{
+    const{error}=await sb.auth.signInWithPassword({email:$("l-email").value.trim(),password:$("l-pw").value});
+    error?alert("E-mel atau kata laluan salah"):start();
+  };
+  $("l-go").onclick=go;
+  $("l-pw").onkeydown=e=>{if(e.key==="Enter")go()};
 }
 
 /* ---- Paparan ---- */
@@ -198,6 +224,7 @@ document.addEventListener("click",e=>{
   else if(a==="view"){S.view=v;render()}
   else if(a==="mo"){S.month=new Date(S.month.getFullYear(),S.month.getMonth()+Number(v),1);render()}
   else if(a==="day"){S.sel=S.sel===v?null:v;render()}
+  else if(a==="logout"){e.preventDefault();sb.auth.signOut().then(()=>{S.tasks=[];S.appts=[];render();$("sync").textContent="Log keluar";showLogin()})}
   else if(a==="theme"){const r=document.documentElement,dark=getComputedStyle(r).getPropertyValue("--bg").trim()==="#121614";r.dataset.theme=dark?"light":"dark"}
 });
 init();
